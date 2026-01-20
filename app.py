@@ -17,28 +17,17 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- ESTILOS CSS PERSONALIZADOS (Para que se vea bonito en web) ---
+# --- ESTILOS CSS ---
 st.markdown("""
     <style>
-    .main {
-        background-color: #F0F2F6;
-    }
-    .stButton>button {
-        background-color: #1F2658;
-        color: white;
-        width: 100%;
-    }
-    .stButton>button:hover {
-        background-color: #A8182D;
-        color: white;
-    }
-    h1 {
-        color: #1F2658;
-    }
+    .main {background-color: #F0F2F6;}
+    .stButton>button {background-color: #1F2658; color: white; width: 100%;}
+    .stButton>button:hover {background-color: #A8182D; color: white;}
+    h1 {color: #1F2658;}
     </style>
 """, unsafe_allow_html=True)
 
-# --- INICIALIZAR ESTADO (Memoria de la app web) ---
+# --- ESTADO DE MEMORIA ---
 if 'productos' not in st.session_state:
     st.session_state['productos'] = []
 
@@ -50,22 +39,34 @@ TEL_COLOMBIA = "+57 316 6981780"
 PDF_AZUL = colors.HexColor("#1F2658")
 PDF_ROJO = colors.HexColor("#A8182D")
 
-# --- FUNCIÓN GENERADORA DE PDF ---
+# --- GENERADOR PDF ---
 def generar_pdf(datos_cliente, productos, config):
     buffer = io.BytesIO()
     
-    # Cálculos de altura dinámica
+    # 1. CÁLCULOS DE DESGLOSE (NUEVO)
+    total_peso = sum(p['peso'] for p in productos)
+    total_impuestos = sum(p['imp'] for p in productos)
+    total_valor_prod = sum(p['val'] for p in productos if p['cobrar'])
+    
+    tarifa = config['tarifa']
+    valor_total_peso = total_peso * tarifa
+    
+    gran_total = valor_total_peso + total_impuestos + total_valor_prod
+
+    # 2. DEFINICIÓN DE ALTURA
+    # Agregamos espacio extra para las filas de desglose (aprox 3 filas mas)
     ancho_a4 = A4[0]
     altura_encabezado = 200 
     altura_fila = 25
-    altura_tabla = (len(productos) + 3) * altura_fila 
+    # Filas productos + Encabezado tabla + 3 Filas desglose + 1 Fila Total + Margen
+    altura_tabla = (len(productos) + 6) * altura_fila 
     altura_pie = 120
     altura_total = altura_encabezado + altura_tabla + altura_pie
     
     c = canvas.Canvas(buffer, pagesize=(ancho_a4, altura_total))
     width, height = ancho_a4, altura_total
 
-    # 1. ENCABEZADO
+    # --- ENCABEZADO ---
     c.setFillColor(PDF_AZUL)
     c.rect(0, height - 25, width, 25, fill=1, stroke=0)
     
@@ -110,46 +111,84 @@ def generar_pdf(datos_cliente, productos, config):
     c.drawRightString(width - 45, y_bloque - 20, f"N° Factura: {random.randint(10000, 99999)}")
     c.drawRightString(width - 45, y_bloque - 35, f"Fecha: {fecha}")
     c.setFillColor(PDF_ROJO)
-    c.drawRightString(width - 45, y_bloque - 50, f"Tarifa Base: {config['tarifa']} {config['moneda']} / Kg")
+    c.drawRightString(width - 45, y_bloque - 50, f"Tarifa Base: {tarifa} {config['moneda']} / Kg")
 
-    # 2. TABLA
+    # --- TABLA CON DESGLOSE ---
     moneda = config['moneda']
+    # Columnas: Descripción | Valor | Peso | Impuesto
     data = [['DESCRIPCIÓN', f'VALOR ({moneda})', 'PESO (Kg)', f'IMPUESTO ({moneda})']]
-    total_pagar = 0
     
     for p in productos:
         data.append([
             p['desc'], f"{p['val']:,.0f}", f"{p['peso']}", f"{p['imp']:,.0f}"
         ])
-        total_pagar += p['tot']
+    
+    # --- FILAS DE CÁLCULO (EL APARTADO NUEVO) ---
+    # Fila vacía separadora (opcional, o directa)
+    
+    # 1. Total Peso y Cálculo
+    texto_calculo_peso = f"Total Peso ({total_peso} Kg x {tarifa})"
+    data.append([texto_calculo_peso, '', '', f"{valor_total_peso:,.0f} {moneda}"])
+    
+    # 2. Total Impuestos
+    data.append(['Total Impuestos', '', '', f"{total_impuestos:,.0f} {moneda}"])
+    
+    # 3. Total Productos (Solo si hay valor cobrado)
+    if total_valor_prod > 0:
+        data.append(['Valor Productos (Cobrados)', '', '', f"{total_valor_prod:,.0f} {moneda}"])
         
-    data.append(['TOTAL', '', '', f"{total_pagar:,.0f} {moneda}"])
+    # 4. GRAN TOTAL
+    data.append(['TOTAL A PAGAR', '', '', f"{gran_total:,.0f} {moneda}"])
 
+    # Estilos
     table = Table(data, colWidths=[9*cm, 3.5*cm, 2.5*cm, 4*cm])
     
-    ts = TableStyle([
+    estilos_tabla = [
+        # Encabezado
         ('BACKGROUND', (0,0), (-1,0), PDF_AZUL),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
         ('BOTTOMPADDING', (0,0), (-1,0), 12),
-        ('ROWBACKGROUNDS', (0,1), (-1,-2), [colors.white, colors.HexColor("#EBF5FB")]),
-        ('LINEBEFORE', (1, 1), (-1, -2), 0.5, colors.HexColor("#D0D3D4")),
+        
+        # Cuerpo (Productos)
+        ('ROWBACKGROUNDS', (0,1), (-1,-5), [colors.white, colors.HexColor("#EBF5FB")]), # Zebra hasta antes del desglose
+        ('LINEBEFORE', (1, 1), (-1, -5), 0.5, colors.HexColor("#D0D3D4")),
+    ]
+    
+    # Lógica para estilos de las filas finales (Desglose)
+    # Calculamos cuántas filas de desglose agregamos (mínimo 3: Peso, Imp, Total. Máximo 4 con Prod)
+    num_filas_extra = 3 if total_valor_prod == 0 else 4
+    start_desglose = -num_filas_extra
+    
+    estilos_extra = [
+        # Estilo para filas de desglose (Peso, Imp, Prod)
+        ('SPAN', (0, i), (2, i)) for i in range(start_desglose, -1) # Unir celdas de texto
+    ]
+    # Aplanar lista
+    estilos_tabla.extend(estilos_extra)
+    
+    estilos_tabla.extend([
+        # Alinear texto del desglose a la derecha
+        ('ALIGN', (0, start_desglose), (2, -1), 'RIGHT'),
+        ('FONTNAME', (0, start_desglose), (-1, -2), 'Helvetica-Bold'), # Negrita para subtotales
+        ('TEXTCOLOR', (0, start_desglose), (-1, -2), colors.darkgrey), # Gris oscuro para subtotales
+        
+        # Estilo GRAN TOTAL (Última fila)
         ('BACKGROUND', (0,-1), (-1,-1), PDF_AZUL),
         ('TEXTCOLOR', (0,-1), (-1,-1), colors.white),
         ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
         ('FONTSIZE', (0,-1), (-1,-1), 12),
-        ('SPAN', (0,-1), (2,-1)), 
-        ('ALIGN', (0,-1), (2,-1), 'RIGHT'), 
-        ('ALIGN', (-1,-1), (-1,-1), 'CENTER'),
     ])
+
+    ts = TableStyle(estilos_tabla)
     table.setStyle(ts)
     
     y_tabla_inicio = y_bloque - 80
     table.wrapOn(c, width, height)
     table.drawOn(c, 30, y_tabla_inicio - altura_tabla + altura_fila + 20) 
 
-    # 3. PIE DE PÁGINA
+    # --- PIE DE PÁGINA ---
     c.setFont("Helvetica-Oblique", 9)
     c.setFillColor(colors.darkgrey)
     c.drawCentredString(width/2, 60, "¡Gracias por confiar en nosotros! Enviamos sus productos con el corazón.")
@@ -161,33 +200,26 @@ def generar_pdf(datos_cliente, productos, config):
     buffer.seek(0)
     return buffer
 
-# --- INTERFAZ WEB (STREAMLIT) ---
+# --- INTERFAZ WEB ---
 
-# Header y Logo
 col_logo, col_titulo = st.columns([1, 3])
 with col_logo:
     if os.path.exists(LOGO_FILENAME):
         st.image(LOGO_FILENAME, width=150)
-    else:
-        st.warning("Logo no encontrado")
 with col_titulo:
     st.title("Gestión de Envíos ✈️")
     st.markdown("**Aruba ⇌ Colombia**")
-
 st.markdown("---")
 
-# Sidebar (Configuración)
 with st.sidebar:
     st.header("⚙️ Configuración")
     moneda = st.radio("Moneda:", ["Fl", "COP"], horizontal=True)
     tarifa_default = 20.0 if moneda == "Fl" else 45000.0
     tarifa = st.number_input("Tarifa por Kilo:", value=tarifa_default)
-    
-    if st.button("🗑️ Borrar toda la lista"):
+    if st.button("🗑️ Borrar lista"):
         st.session_state['productos'] = []
         st.rerun()
 
-# Formulario Cliente
 with st.container():
     st.subheader("👤 Datos del Cliente")
     col1, col2 = st.columns(2)
@@ -198,63 +230,40 @@ with st.container():
         direccion = st.text_input("Dirección")
         pais = st.selectbox("País Destino", ["Colombia", "Aruba"])
 
-# Formulario Agregar Producto
 st.markdown("### 📦 Agregar Carga")
-with st.form("form_producto", clear_on_submit=True):
+with st.form("form_prod", clear_on_submit=True):
     c1, c2, c3, c4 = st.columns(4)
     desc = c1.text_input("Descripción")
-    val = c2.number_input("Valor Declarado", min_value=0.0)
+    val = c2.number_input("Valor Decl.", min_value=0.0)
     peso = c3.number_input("Peso (Kg)", min_value=0.0)
-    imp = c4.number_input("Impuesto Extra", min_value=0.0)
-    
-    cobrar_prod = st.checkbox("¿Cobrar valor del producto al cliente?")
-    
-    submitted = st.form_submit_button("➕ Agregar a la Lista")
-    
-    if submitted and desc:
-        costo_envio = (peso * tarifa) + imp
-        total_linea = costo_envio + val if cobrar_prod else costo_envio
-        
-        st.session_state['productos'].append({
-            "desc": desc, "val": val, "peso": peso, "imp": imp, 
-            "tot": total_linea, "cobrar": cobrar_prod
-        })
+    imp = c4.number_input("Impuesto", min_value=0.0)
+    cobrar = st.checkbox("¿Cobrar producto?")
+    if st.form_submit_button("➕ Agregar"):
+        if desc:
+            st.session_state['productos'].append({
+                "desc": desc, "val": val, "peso": peso, "imp": imp, "cobrar": cobrar
+            })
+            st.rerun()
 
-# Mostrar Tabla de Productos
 if st.session_state['productos']:
-    st.markdown("### 📋 Resumen de Factura")
-    
-    # Crear DataFrame para visualización limpia
-    df_show = pd.DataFrame(st.session_state['productos'])
-    # Formatear columnas para visualización
-    df_vis = pd.DataFrame()
-    df_vis['Descripción'] = df_show['desc']
-    df_vis['Valor'] = df_show['val'].apply(lambda x: f"{x:,.0f}")
-    df_vis['Peso'] = df_show['peso']
-    df_vis['Impuesto'] = df_show['imp'].apply(lambda x: f"{x:,.0f}")
-    df_vis['¿Se Cobra?'] = df_show['cobrar'].apply(lambda x: "SÍ" if x else "NO")
-    df_vis['Total'] = df_show['tot'].apply(lambda x: f"{x:,.0f} {moneda}")
-    
-    st.table(df_vis)
-    
-    total_final = sum(p['tot'] for p in st.session_state['productos'])
-    st.markdown(f"<h3 style='text-align: right; color: #1F2658;'>TOTAL A PAGAR: {total_final:,.0f} {moneda}</h3>", unsafe_allow_html=True)
+    st.markdown("### 📋 Resumen")
+    # Tabla simple para la web
+    data_web = []
+    total_web = 0
+    for p in st.session_state['productos']:
+        costo_envio = (p['peso'] * tarifa) + p['imp']
+        linea = costo_envio + p['val'] if p['cobrar'] else costo_envio
+        total_web += linea
+        data_web.append({
+            "Descripción": p['desc'],
+            "Peso": f"{p['peso']} Kg",
+            "Total Línea": f"{linea:,.0f}"
+        })
+    st.table(data_web)
+    st.info(f"Total estimado: {total_web:,.0f} {moneda}")
 
-    # Botón Generar PDF
     if nombre and telefono:
-        datos_cliente = {"nombre": nombre, "direccion": direccion, "telefono": telefono, "pais": pais}
-        config_factura = {"moneda": moneda, "tarifa": tarifa}
-        
-        pdf_bytes = generar_pdf(datos_cliente, st.session_state['productos'], config_factura)
-        
-        st.download_button(
-            label="📄 DESCARGAR FACTURA PDF",
-            data=pdf_bytes,
-            file_name=f"Factura_{nombre.replace(' ','_')}.pdf",
-            mime="application/pdf"
-        )
-    else:
-        st.warning("⚠️ Ingresa el nombre y teléfono del cliente para habilitar la descarga.")
-
-else:
-    st.info("Agrega productos para comenzar.")
+        datos = {"nombre": nombre, "telefono": telefono, "direccion": direccion}
+        conf = {"moneda": moneda, "tarifa": tarifa}
+        pdf = generar_pdf(datos, st.session_state['productos'], conf)
+        st.download_button("📄 DESCARGAR PDF", pdf, f"Factura_{nombre}.pdf", "application/pdf")
