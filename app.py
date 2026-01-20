@@ -43,7 +43,7 @@ PDF_ROJO = colors.HexColor("#A8182D")
 def generar_pdf(datos_cliente, productos, config):
     buffer = io.BytesIO()
     
-    # 1. CÁLCULOS DE DESGLOSE (NUEVO)
+    # 1. CÁLCULOS DE DESGLOSE
     total_peso = sum(p['peso'] for p in productos)
     total_impuestos = sum(p['imp'] for p in productos)
     total_valor_prod = sum(p['val'] for p in productos if p['cobrar'])
@@ -54,11 +54,9 @@ def generar_pdf(datos_cliente, productos, config):
     gran_total = valor_total_peso + total_impuestos + total_valor_prod
 
     # 2. DEFINICIÓN DE ALTURA
-    # Agregamos espacio extra para las filas de desglose (aprox 3 filas mas)
     ancho_a4 = A4[0]
     altura_encabezado = 200 
     altura_fila = 25
-    # Filas productos + Encabezado tabla + 3 Filas desglose + 1 Fila Total + Margen
     altura_tabla = (len(productos) + 6) * altura_fila 
     altura_pie = 120
     altura_total = altura_encabezado + altura_tabla + altura_pie
@@ -115,7 +113,6 @@ def generar_pdf(datos_cliente, productos, config):
 
     # --- TABLA CON DESGLOSE ---
     moneda = config['moneda']
-    # Columnas: Descripción | Valor | Peso | Impuesto
     data = [['DESCRIPCIÓN', f'VALOR ({moneda})', 'PESO (Kg)', f'IMPUESTO ({moneda})']]
     
     for p in productos:
@@ -123,21 +120,16 @@ def generar_pdf(datos_cliente, productos, config):
             p['desc'], f"{p['val']:,.0f}", f"{p['peso']}", f"{p['imp']:,.0f}"
         ])
     
-    # --- FILAS DE CÁLCULO (EL APARTADO NUEVO) ---
-    # Fila vacía separadora (opcional, o directa)
-    
-    # 1. Total Peso y Cálculo
+    # FILAS DE CÁLCULO
     texto_calculo_peso = f"Total Peso ({total_peso} Kg x {tarifa})"
     data.append([texto_calculo_peso, '', '', f"{valor_total_peso:,.0f} {moneda}"])
     
-    # 2. Total Impuestos
     data.append(['Total Impuestos', '', '', f"{total_impuestos:,.0f} {moneda}"])
     
-    # 3. Total Productos (Solo si hay valor cobrado)
     if total_valor_prod > 0:
         data.append(['Valor Productos (Cobrados)', '', '', f"{total_valor_prod:,.0f} {moneda}"])
         
-    # 4. GRAN TOTAL
+    # GRAN TOTAL
     data.append(['TOTAL A PAGAR', '', '', f"{gran_total:,.0f} {moneda}"])
 
     # Estilos
@@ -152,32 +144,30 @@ def generar_pdf(datos_cliente, productos, config):
         ('BOTTOMPADDING', (0,0), (-1,0), 12),
         
         # Cuerpo (Productos)
-        ('ROWBACKGROUNDS', (0,1), (-1,-5), [colors.white, colors.HexColor("#EBF5FB")]), # Zebra hasta antes del desglose
+        ('ROWBACKGROUNDS', (0,1), (-1,-5), [colors.white, colors.HexColor("#EBF5FB")]),
         ('LINEBEFORE', (1, 1), (-1, -5), 0.5, colors.HexColor("#D0D3D4")),
     ]
     
     # Lógica para estilos de las filas finales (Desglose)
-    # Calculamos cuántas filas de desglose agregamos (mínimo 3: Peso, Imp, Total. Máximo 4 con Prod)
     num_filas_extra = 3 if total_valor_prod == 0 else 4
     start_desglose = -num_filas_extra
     
-    estilos_extra = [
-        # Estilo para filas de desglose (Peso, Imp, Prod)
-        ('SPAN', (0, i), (2, i)) for i in range(start_desglose, -1) # Unir celdas de texto
-    ]
-    # Aplanar lista
+    # Unir celdas para los textos
+    estilos_extra = [('SPAN', (0, i), (2, i)) for i in range(start_desglose, 0)]
     estilos_tabla.extend(estilos_extra)
     
+    # --- AQUÍ ESTÁ EL CAMBIO PRINCIPAL ---
     estilos_tabla.extend([
-        # Alinear texto del desglose a la derecha
-        ('ALIGN', (0, start_desglose), (2, -1), 'RIGHT'),
-        ('FONTNAME', (0, start_desglose), (-1, -2), 'Helvetica-Bold'), # Negrita para subtotales
-        ('TEXTCOLOR', (0, start_desglose), (-1, -2), colors.darkgrey), # Gris oscuro para subtotales
+        # Estilo para TODAS las filas de desglose (Peso, Imp, Prod, Total Final)
+        ('BACKGROUND', (0, start_desglose), (-1, -1), PDF_AZUL), # Fondo azul para todo el bloque
+        ('TEXTCOLOR', (0, start_desglose), (-1, -1), colors.white), # Texto blanco para todo
+        ('ALIGN', (0, start_desglose), (2, -1), 'RIGHT'), # Alinear textos a la derecha
+        ('FONTNAME', (0, start_desglose), (-1, -1), 'Helvetica-Bold'), # Negrita para todo
         
-        # Estilo GRAN TOTAL (Última fila)
-        ('BACKGROUND', (0,-1), (-1,-1), PDF_AZUL),
-        ('TEXTCOLOR', (0,-1), (-1,-1), colors.white),
-        ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+        # Líneas blancas separadoras entre los totales para que no se vea un solo bloque azul
+        ('LINEBELOW', (0, start_desglose), (-1, -2), 1, colors.white),
+
+        # El GRAN TOTAL un poco más grande
         ('FONTSIZE', (0,-1), (-1,-1), 12),
     ])
 
@@ -247,7 +237,6 @@ with st.form("form_prod", clear_on_submit=True):
 
 if st.session_state['productos']:
     st.markdown("### 📋 Resumen")
-    # Tabla simple para la web
     data_web = []
     total_web = 0
     for p in st.session_state['productos']:
